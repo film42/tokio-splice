@@ -30,8 +30,6 @@ pub struct Copy<'a, R: ?Sized, W: ?Sized> {
     pos: usize,
     cap: usize,
     amt: u64,
-    //buf: Box<[u8]>,
-
     read_fd: Option<RawFd>,
     write_fd: Option<RawFd>,
 }
@@ -48,13 +46,12 @@ where
         amt: 0,
         pos: 0,
         cap: 0,
-        //buf: Box::new([0; 2048]),
         read_fd: None,
         write_fd: None,
     }
 }
 
-const BUF_SIZE: usize = 4096;
+const MAX_BUF_SIZE: usize = 4 << 20;
 
 impl<R, W> Future for Copy<'_, R, W>
 where
@@ -92,7 +89,7 @@ where
                     None,
                     me.write_fd.unwrap(),
                     None,
-                    BUF_SIZE,
+                    MAX_BUF_SIZE,
                     SpliceFFlags::SPLICE_F_MOVE
                         // | SpliceFFlags::SPLICE_F_MORE // not added by haproxy
                         | SpliceFFlags::SPLICE_F_NONBLOCK,
@@ -116,6 +113,13 @@ where
             }
 
             while self.pos < self.cap {
+                let remaining = self.cap - self.pos;
+                let max = if MAX_BUF_SIZE > remaining {
+                    remaining
+                } else {
+                    MAX_BUF_SIZE
+                };
+
                 //eprintln!("Writing bytes...");
                 let me = &mut *self;
                 let res = splice(
@@ -123,7 +127,7 @@ where
                     None,
                     me.writer.as_raw_fd(),
                     None,
-                    BUF_SIZE,
+                    max,
                     SpliceFFlags::SPLICE_F_MOVE
                         // | SpliceFFlags::SPLICE_F_MORE // not added by haproxy
                         | SpliceFFlags::SPLICE_F_NONBLOCK,
@@ -150,92 +154,51 @@ where
                 };
             }
 
-            // // TODO: Does we need to do this since we're using splice?
-            // //
-            // // If we've written al the data and we've seen EOF, flush out the
-            // // data and finish the transfer.
-            // // done with the entire transfer.
-             if self.pos == self.cap && self.read_done {
-            //     let me = &mut *self;
-            //     ready!(Pin::new(&mut *me.writer).poll_flush(cx))?;
-                 return Poll::Ready(Ok(self.amt));
-             }
+            if self.pos == self.cap && self.read_done {
+                // TODO: Should we add this here?
+                // let me = &mut *self;
+                // ready!(Pin::new(&mut *me.writer).poll_flush(cx))?;
+                return Poll::Ready(Ok(self.amt));
+            }
         }
-
-        // loop {
-        //     // If our buffer is empty, then we need to read some data to
-        //     // continue.
-        //     if self.pos == self.cap && !self.read_done {
-        //         let me = &mut *self;
-        //         let n = ready!(Pin::new(&mut *me.reader).poll_read(cx, &mut me.buf))?;
-        //         if n == 0 {
-        //             self.read_done = true;
-        //         } else {
-        //             self.pos = 0;
-        //             self.cap = n;
-        //         }
-        //     }
-
-        //     // If our buffer has some data, let's write it out!
-        //     while self.pos < self.cap {
-        //         let me = &mut *self;
-        //         let i = ready!(Pin::new(&mut *me.writer).poll_write(cx, &me.buf[me.pos..me.cap]))?;
-        //         if i == 0 {
-        //             return Poll::Ready(Err(io::Error::new(
-        //                 io::ErrorKind::WriteZero,
-        //                 "write zero byte into writer",
-        //             )));
-        //         } else {
-        //             self.pos += i;
-        //             self.amt += i as u64;
-        //         }
-        //     }
-
-        //     // If we've written al the data and we've seen EOF, flush out the
-        //     // data and finish the transfer.
-        //     // done with the entire transfer.
-        //     if self.pos == self.cap && self.read_done {
-        //         let me = &mut *self;
-        //         ready!(Pin::new(&mut *me.writer).poll_flush(cx))?;
-        //         return Poll::Ready(Ok(self.amt));
-        //     }
-        // }
     }
 }
-
-#[macro_use]
-extern crate time_test;
-
 
 #[cfg(test)]
 mod tests {
     use super::copy;
     use std::fs;
+    use std::time::Instant;
     use tokio::fs as tokio_fs;
     use tokio::io::AsyncReadExt;
 
     #[tokio::test]
     async fn it_can_make_an_end_to_end_copy() {
-        time_test!();
+        let now = Instant::now();
 
         //fs::write("/tmp/tokio-splice-fixture_end_to_end_copy_file", "hello world").unwrap();
-        let mut input = fs::File::open("/tmp/tokio-splice-fixture_end_to_end_copy_file").expect("could not open input file");
-        let mut output = fs::File::create("/tmp/tokio-splice-fixture_end_to_end_copy_file-out").expect("could not open output file");
+        let mut input = fs::File::open("/tmp/tokio-splice-fixture_end_to_end_copy_file")
+            .expect("could not open input file");
+        let mut output = fs::File::create("/tmp/tokio-splice-fixture_end_to_end_copy_file-out")
+            .expect("could not open output file");
 
         // eprintln!("...");
-        copy(&mut input, &mut output).await;
+        copy(&mut input, &mut output).await.unwrap();
+
+        println!("{}", now.elapsed().as_millis());
     }
 
-    #[tokio::test]
-    async fn it_can_make_an_end_to_end_copy_old_school() {
-        time_test!();
+    // #[tokio::test]
+    // async fn it_can_make_an_end_to_end_copy_old_school() {
+    //     time_test!();
 
-        //fs::write("/tmp/tokio-splice-fixture_end_to_end_copy_file", "hello world").unwrap();
-        let mut input = tokio_fs::File::open("/tmp/tokio-splice-fixture_end_to_end_copy_file").await.expect("could not open input file");
-        let mut output = tokio_fs::File::create("/tmp/tokio-splice-fixture_end_to_end_copy_file-out").await.expect("could not open output file");
+    //     //fs::write("/tmp/tokio-splice-fixture_end_to_end_copy_file", "hello world").unwrap();
+    //     let mut input = tokio_fs::File::open("/tmp/tokio-splice-fixture_end_to_end_copy_file").await.expect("could not open input file");
+    //     let mut output = tokio_fs::File::create("/tmp/tokio-splice-fixture_end_to_end_copy_file-out").await.expect("could not open output file");
 
-        input.copy(&mut output).await;
-    }
+    //     input.copy(&mut output).await;
+    // }
+
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);
