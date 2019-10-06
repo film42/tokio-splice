@@ -1,7 +1,6 @@
 extern crate nix;
 extern crate tokio;
 
-use futures::ready;
 use nix::fcntl::{splice, SpliceFFlags};
 use nix::unistd::pipe;
 use std::future::Future;
@@ -9,7 +8,6 @@ use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite};
 
 use nix::errno::Errno;
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
@@ -60,7 +58,7 @@ where
 {
     type Output = io::Result<u64>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
         //eprintln!("Connecting...");
         // Ensure the pipe has been configured and created.
         {
@@ -170,7 +168,6 @@ mod tests {
     use std::fs;
     use std::time::Instant;
     use tokio::fs as tokio_fs;
-    use tokio::io::AsyncReadExt;
 
     #[tokio::test]
     async fn it_can_make_an_end_to_end_copy() {
@@ -188,16 +185,25 @@ mod tests {
         println!("{}", now.elapsed().as_millis());
     }
 
-    // #[tokio::test]
-    // async fn it_can_make_an_end_to_end_copy_old_school() {
-    //     time_test!();
+    #[tokio::test]
+    async fn it_can_make_an_end_to_end_copy_old_school() {
+        use tokio::io::AsyncReadExt;
 
-    //     //fs::write("/tmp/tokio-splice-fixture_end_to_end_copy_file", "hello world").unwrap();
-    //     let mut input = tokio_fs::File::open("/tmp/tokio-splice-fixture_end_to_end_copy_file").await.expect("could not open input file");
-    //     let mut output = tokio_fs::File::create("/tmp/tokio-splice-fixture_end_to_end_copy_file-out").await.expect("could not open output file");
+        let now = Instant::now();
 
-    //     input.copy(&mut output).await;
-    // }
+        //fs::write("/tmp/tokio-splice-fixture_end_to_end_copy_file", "hello world").unwrap();
+        let mut input = tokio_fs::File::open("/tmp/tokio-splice-fixture_end_to_end_copy_file")
+            .await
+            .expect("could not open input file");
+        let mut output =
+            tokio_fs::File::create("/tmp/tokio-splice-fixture_end_to_end_copy_file-out")
+                .await
+                .expect("could not open output file");
+
+        input.copy(&mut output).await.unwrap();
+
+        println!("{}", now.elapsed().as_millis());
+    }
 
     #[test]
     fn it_works() {
